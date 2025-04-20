@@ -86,7 +86,7 @@ The code can be executed to generate multiple privacy-preserving synthetic traje
 #### Real vs. Synthetic Trajectories
 ![Example 1](example/1.png)
 ![Example 2](example/2.png)
-![Example 3](example/3.png)
+<!-- ![Example 3](example/3.png) -->
 ![Example 4](example/4.png)
 ![Example 5](example/5.png)
 
