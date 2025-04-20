@@ -83,3 +83,11 @@ This approach provides a strong balance between privacy protection and maintaini
 
 The code can be executed to generate multiple privacy-preserving synthetic trajectories for a given real location. Parameters such as \(\varepsilon\) (privacy level), similarity factor, and trajectory complexity can be adjusted to meet specific requirements.
 
+## Example
+
+#### Real vs. Synthetic Trajectories
+![Example 1](example/1.png)
+![Example 2](example/2.png)
+![Example 3](example/3.png)
+![Example 4](example/4.png)
+![Example 5](example/5.png)
