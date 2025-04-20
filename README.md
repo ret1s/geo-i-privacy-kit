@@ -4,8 +4,6 @@
 
 </div>
 
-**Master Thesis Project**
-
 This repository contains the implementation of a privacy-preserving approach to trajectory data protection, developed as part of a Master's Thesis in Computer Science. The system employs differential privacy concepts, specifically geo-indistinguishability, to protect users' location data while maintaining utility for spatial analysis.
 
 The framework generates realistic yet privacy-preserving synthetic trajectories that follow road networks and preserve important characteristics of the original paths, all while providing formal privacy guarantees.
@@ -91,10 +89,6 @@ The code can be executed to generate multiple privacy-preserving synthetic traje
 ![Example 3](example/3.png)
 ![Example 4](example/4.png)
 ![Example 5](example/5.png)
-
-## About
-
-This repository contains the code and resources for my MSc thesis project. It includes implementations, experiments, and analyses conducted as part of the research.
 
 ## How to Run
 
