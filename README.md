@@ -52,9 +52,9 @@ $$
 $$
 
 Where:
-- \(d(x,y)\) is the distance between locations \(x\) and \(y\)
-- \(\varepsilon\) is the privacy parameter (lower values provide stronger privacy)
-- \(S\) is any subset of possible outputs
+- d(x,y): the distance between locations x and y
+- ε (epsilon): the privacy parameter (lower values provide stronger privacy)
+- S: any subset of possible outputs
 
 ### Planar Laplace Mechanism
 The implementation uses a planar Laplace distribution to add calibrated noise to locations:
@@ -65,10 +65,10 @@ $$
 
 Where \(||x||\) is the Euclidean distance from the origin.
 
-The noise is generated using:
-- Sample angle \(\theta\) uniformly from \([0, 2\pi)\)
-- Sample radius \(r\) from exponential distribution with parameter \(\varepsilon\)
-- Convert to Cartesian coordinates: \((r \cdot \cos(\theta), r \cdot \sin(\theta))\)
+The noise generation process is as follows:
+- Sample angle θ uniformly from the interval [0, 2π).
+- Sample radius r from an exponential distribution with parameter ε.
+- Convert polar coordinates (r, θ) to Cartesian coordinates: $(x, y) = (r \cdot \cos(\theta), r \cdot \sin(\theta))$
 
 ### Similarity-Based Synthetic Trajectory Generation
 The synthetic trajectories are generated using a biased random walk on the road network graph, where:
