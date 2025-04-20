@@ -91,3 +91,31 @@ The code can be executed to generate multiple privacy-preserving synthetic traje
 ![Example 3](example/3.png)
 ![Example 4](example/4.png)
 ![Example 5](example/5.png)
+
+## About
+
+This repository contains the code and resources for my MSc thesis project. It includes implementations, experiments, and analyses conducted as part of the research.
+
+## How to Run
+
+1. Clone the repository:
+    ```bash
+    git clone https://github.com/ret1s/geo-i-privacy-kit.git
+    ```
+2. Navigate to the `geo-i-privacy-kit` directory:
+    ```bash
+    cd geo-i-privacy-kit
+    ```
+3. Follow the instructions in the `README.md` file within the `geo-i-privacy-kit` directory to set up dependencies and execute the scripts.
+
+## Requirements
+
+- Python 3.x
+- Required libraries are listed in `requirements.txt`. Install them using:
+  ```bash
+  pip install -r requirements.txt
+  ```
+
+## Contact
+
+For any questions or feedback, feel free to reach out at [ngmhah@gmail.com].
