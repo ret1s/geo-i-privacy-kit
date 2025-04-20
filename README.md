@@ -47,9 +47,9 @@ The privacy mechanism is built on the following mathematical foundations:
 ### Geo-Indistinguishability
 Geo-indistinguishability extends differential privacy to the spatial domain. For two locations \(x\) and \(y\), the privacy mechanism \(K\) satisfies \(\varepsilon\)-geo-indistinguishability if:
 
-\[
+$$
 \frac{\Pr[K(x) \in S]}{\Pr[K(y) \in S]} \le e^{\varepsilon d(x,y)}
-\]
+$$
 
 Where:
 - \(d(x,y)\) is the distance between locations \(x\) and \(y\)
@@ -59,9 +59,9 @@ Where:
 ### Planar Laplace Mechanism
 The implementation uses a planar Laplace distribution to add calibrated noise to locations:
 
-\[
+$$
 D_{\varepsilon}(x) \propto e^{-\varepsilon||x||}
-\]
+$$
 
 Where \(||x||\) is the Euclidean distance from the origin.
 
