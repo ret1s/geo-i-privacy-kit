@@ -43,7 +43,7 @@ The implementation utilizes the following technologies:
 The privacy mechanism is built on the following mathematical foundations:
 
 ### Geo-Indistinguishability
-Geo-indistinguishability extends differential privacy to the spatial domain. For two locations \(x\) and \(y\), the privacy mechanism \(K\) satisfies \(\varepsilon\)-geo-indistinguishability if:
+Geo-indistinguishability extends differential privacy to the spatial domain. For two locations \(x\) and \(y\), the privacy mechanism \(K\) satisfies ε-geo-indistinguishability if:
 
 $$
 \frac{\Pr[K(x) \in S]}{\Pr[K(y) \in S]} \le e^{\varepsilon d(x,y)}
@@ -79,7 +79,7 @@ This approach provides a strong balance between privacy protection and maintaini
 
 ## Usage
 
-The code can be executed to generate multiple privacy-preserving synthetic trajectories for a given real location. Parameters such as \(\varepsilon\) (privacy level), similarity factor, and trajectory complexity can be adjusted to meet specific requirements.
+The code can be executed to generate multiple privacy-preserving synthetic trajectories for a given real location. Parameters such as (ε) (privacy level), similarity factor, and trajectory complexity can be adjusted to meet specific requirements.
 
 ## Example
 
