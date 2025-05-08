@@ -82,21 +82,33 @@ def plot_trajectories(real_traj, fake_traj):
     real_gdf = real_gdf.to_crs(epsg=3857)
     fake_gdf = fake_gdf.to_crs(epsg=3857)
 
+    # Plot real trajectory
     fig, ax = plt.subplots(figsize=(10, 10))
-
-    # Vẽ quỹ đạo thực tế
     real_gdf.plot(ax=ax, color='blue', markersize=60, alpha=0.8, label='Real points')
     ax.plot(real_gdf.geometry.x, real_gdf.geometry.y, color='blue', linewidth=2, linestyle='-', label='Real trajectory')
 
-    # Vẽ quỹ đạo giả
+    for idx, real_point in enumerate(real_gdf.geometry):
+        ax.text(real_point.x, real_point.y, str(idx + 1), color='blue', fontsize=12, ha='center', va='center', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
+
+    ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik)
+    ax.legend()
+    plt.title('Real Trajectory')
+    plt.xlabel('Longitude')
+    plt.ylabel('Latitude')
+    plt.tight_layout()
+    plt.show()
+
+    # Plot perturbed trajectory
+    fig, ax = plt.subplots(figsize=(10, 10))
     fake_gdf.plot(ax=ax, color='red', markersize=60, alpha=0.8, label='Perturbed points')
     ax.plot(fake_gdf.geometry.x, fake_gdf.geometry.y, color='red', linewidth=2, linestyle='--', label='Perturbed trajectory')
 
-    # Thêm basemap từ contextily
-    ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik)
+    for idx, fake_point in enumerate(fake_gdf.geometry):
+        ax.text(fake_point.x, fake_point.y, str(idx + 1), color='red', fontsize=12, ha='center', va='center', bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
 
+    ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik)
     ax.legend()
-    plt.title('Real vs Perturbed Trajectory')
+    plt.title('Perturbed Trajectory')
     plt.xlabel('Longitude')
     plt.ylabel('Latitude')
     plt.tight_layout()
