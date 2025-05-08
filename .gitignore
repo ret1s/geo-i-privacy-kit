@@ -1,3 +1,4 @@
 venv/*
 cache/*
 result/*
+__pycache__/*
