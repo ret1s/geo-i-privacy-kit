@@ -18,7 +18,7 @@ def planar_laplace_noise(epsilon):
 # Part 2: Road Network Functions
 def get_road_network(location, distance=3000):
     """Download road network for a specific location with given radius"""
-    G = ox.graph_from_point(location, dist=distance, network_type='drive')
+    G = ox.graph_from_point(location, dist=distance, network_type='drive', simplify=False)
     
     # Add edge lengths if they don't exist
     if 'length' not in G.edges[list(G.edges)[0]]:
@@ -63,6 +63,19 @@ def convert_nodes_to_points_and_edges(G, nodes_gdf, node_path):
             continue
     
     return trajectory_points, path_edges
+
+def get_road_weight(G, u, v):
+    """Create weights that favor smaller roads"""
+    data = G.get_edge_data(u, v, 0)
+    road_type = data.get('highway', 'unclassified')
+    
+    # Create a bias for smaller roads
+    if road_type in ['residential', 'living_street', 'service']:
+        return data['length'] * 0.7  # Make smaller roads "shorter" 
+    elif road_type in ['tertiary', 'unclassified']:
+        return data['length'] * 0.85
+    else:
+        return data['length']  # Keep main roads at normal weight
 
 # Part 4: Trajectory Generation Functions
 def generate_trajectory(G, start_node, length=10, max_dist=1000):
@@ -576,7 +589,7 @@ def main():
             similarity_factor=similarity_factor, 
             length=num_points,
             end_focus=3,
-            qos_radius=300
+            qos_radius=200
         )
         
         # Convert to points and edges
