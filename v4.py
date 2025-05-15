@@ -17,15 +17,19 @@ MAX_PLAUSIBLE_SPEED_KMH = 60 # For future path coherence checks
 # --- Ho Chi Minh City Coordinates (from user's provided code) ---
 HCMC_CENTER_LAT_CONFIG = 10.7769
 HCMC_CENTER_LON_CONFIG = 106.7009
-offset_qos_deg_config = 0.005 # Approx 500m in degrees
+# EXPANDED QoS Region: offset_qos_deg_config increased
+offset_qos_deg_config = 0.008 # Approx 800m "radius" -> 1.6km x 1.6km QoS box
 
 # Define BBOX for OSMnx download based on user's QoS region idea
-# Making it slightly larger than the QoS to ensure graph coverage for snapping
+# HCMC_BBOX_HALF_SIZE_DEG determines the OSM data download area.
+# It should be >= offset_qos_deg_config + small buffer.
+HCMC_BBOX_HALF_SIZE_DEG = 0.009 # Approx 1km radius -> ~1.8km x ~1.8km box for OSM data
+
 HCMC_BBOX = (
-    HCMC_CENTER_LAT_CONFIG + offset_qos_deg_config + 0.003,  # North
-    HCMC_CENTER_LAT_CONFIG - offset_qos_deg_config - 0.003,  # South
-    HCMC_CENTER_LON_CONFIG + offset_qos_deg_config + 0.003,  # East
-    HCMC_CENTER_LON_CONFIG - offset_qos_deg_config - 0.003   # West
+    HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG,  # North
+    HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG,  # South
+    HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG,  # East
+    HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG   # West
 )
 
 # Global variables for OSM data
@@ -63,34 +67,31 @@ def initialize_osm_data(bbox_tuple):
         print("Step 2/3: Fetching building footprints...")
         features_start_time = time.time()
         tags_building = {'building': True}
-        # Initialize as empty GeoDataFrame with the TARGET_CRS
         buildings_gdf = gpd.GeoDataFrame(geometry=[], crs=TARGET_CRS) 
 
         try:
             buildings_all_tags = ox.features_from_bbox(bbox_tuple, tags=tags_building)
             if not buildings_all_tags.empty and 'geometry' in buildings_all_tags.columns:
-                # Filter for non-null and valid geometries first
-                # Ensure the geometry column is treated as such by GeoPandas
                 if not isinstance(buildings_all_tags, gpd.GeoDataFrame):
                     buildings_all_tags = gpd.GeoDataFrame(buildings_all_tags, geometry='geometry', crs=wgs84_crs)
                 else:
                     buildings_all_tags = buildings_all_tags.set_crs(wgs84_crs, allow_override=True)
-
-                valid_geometries = buildings_all_tags[buildings_all_tags['geometry'].notna() & buildings_all_tags['geometry'].is_valid].copy()
                 
+                valid_geometries = buildings_all_tags[
+                    buildings_all_tags['geometry'].notna() & \
+                    buildings_all_tags['geometry'].is_valid
+                ].copy() # Check for notna and is_valid first
+
                 if not valid_geometries.empty:
-                    # Select only Polygon/MultiPolygon types
+                    # Then filter by type
                     current_buildings_gdf = valid_geometries[valid_geometries['geometry'].type.isin(['Polygon', 'MultiPolygon'])].copy()
-                    
                     if not current_buildings_gdf.empty:
-                        # The CRS should already be WGS84 from features_from_bbox
-                        # current_buildings_gdf = current_buildings_gdf.set_crs(wgs84_crs, allow_override=True) # Already set or inferred
-                        buildings_gdf = current_buildings_gdf.to_crs(TARGET_CRS) # Project
+                        # Ensure only geometry column is used for final GDF if issues persist with other attributes
+                        buildings_gdf_geom_only = gpd.GeoDataFrame(geometry=current_buildings_gdf['geometry'], crs=wgs84_crs)
+                        buildings_gdf = buildings_gdf_geom_only.to_crs(TARGET_CRS) 
                         print(f"  Loaded and projected {len(buildings_gdf)} building features.")
         except Exception as e_feat:
             print(f"  Error during building feature processing: {e_feat}")
-            # buildings_gdf remains an empty GeoDataFrame with the correct CRS
-
         if buildings_gdf.empty: 
             print("  No valid building Polygon/MultiPolygon features found or processed.")
         print(f"  Building features step took {time.time() - features_start_time:.2f}s")
@@ -99,9 +100,7 @@ def initialize_osm_data(bbox_tuple):
         print("Step 3/3: Fetching water features...")
         water_features_start_time = time.time()
         tags_water = {'natural': ['water', 'bay'], 'waterway': True, 'landuse': ['reservoir', 'basin']}
-        # Initialize as empty GeoDataFrame with the TARGET_CRS
         water_gdf = gpd.GeoDataFrame(geometry=[], crs=TARGET_CRS)
-
         try:
             water_all_tags = ox.features_from_bbox(bbox_tuple, tags=tags_water)
             if not water_all_tags.empty and 'geometry' in water_all_tags.columns:
@@ -109,19 +108,19 @@ def initialize_osm_data(bbox_tuple):
                     water_all_tags = gpd.GeoDataFrame(water_all_tags, geometry='geometry', crs=wgs84_crs)
                 else:
                     water_all_tags = water_all_tags.set_crs(wgs84_crs, allow_override=True)
-                
-                valid_geometries_water = water_all_tags[water_all_tags['geometry'].notna() & water_all_tags['geometry'].is_valid].copy()
 
+                valid_geometries_water = water_all_tags[
+                    water_all_tags['geometry'].notna() & \
+                    water_all_tags['geometry'].is_valid
+                ].copy()
                 if not valid_geometries_water.empty:
                     current_water_gdf = valid_geometries_water[valid_geometries_water['geometry'].type.isin(['Polygon', 'MultiPolygon'])].copy()
-
                     if not current_water_gdf.empty:
-                        # current_water_gdf = current_water_gdf.set_crs(wgs84_crs, allow_override=True) # Already set or inferred
-                        water_gdf = current_water_gdf.to_crs(TARGET_CRS)
+                        water_gdf_geom_only = gpd.GeoDataFrame(geometry=current_water_gdf['geometry'], crs=wgs84_crs)
+                        water_gdf = water_gdf_geom_only.to_crs(TARGET_CRS)
                         print(f"  Loaded and projected {len(water_gdf)} water features.")
         except Exception as e_feat_water:
             print(f"  Error during water feature processing: {e_feat_water}")
-
         if water_gdf.empty: 
             print("  No valid water Polygon/MultiPolygon features found or processed.")
         print(f"  Water features step took {time.time() - water_features_start_time:.2f}s")
@@ -191,12 +190,16 @@ def get_random_point_in_polygon_wgs84(polygon_wgs84): # Expects Shapely Polygon
     return (polygon_wgs84.centroid.x, polygon_wgs84.centroid.y)
 
 
-def is_location_realistic_on_network(point_utm, qos_polygon_utm):
-    """Checks if a point (already snapped to network, in UTM) is realistic."""
+def is_location_realistic_on_network(point_utm, qos_polygon_utm, check_water_strict=True):
+    """
+    Checks if a point (already snapped to network, in UTM) is realistic.
+    - Optionally checks water intersection strictly.
+    """
     if G_proj is None or not point_utm: return False 
-    if qos_polygon_utm and not qos_polygon_utm.contains(point_utm): return False 
+    # The following line is commented out as per user request (15 May 2025)
+    # if qos_polygon_utm and not qos_polygon_utm.contains(point_utm): return False 
 
-    if water_gdf is not None and not water_gdf.empty and water_gdf.intersects(point_utm).any():
+    if check_water_strict and water_gdf is not None and not water_gdf.empty and water_gdf.intersects(point_utm).any():
         try:
             nearest_edge_uvk = ox.distance.nearest_edges(G_proj, X=point_utm.x, Y=point_utm.y)
             u,v,k = nearest_edge_uvk if isinstance(nearest_edge_uvk, tuple) else nearest_edge_uvk[0]
@@ -205,7 +208,6 @@ def is_location_realistic_on_network(point_utm, qos_polygon_utm):
                 return False 
         except Exception: 
             return False 
-
     return True
 
 def r_gits_generate_fake_point_on_network(
@@ -221,8 +223,13 @@ def r_gits_generate_fake_point_on_network(
         return None
 
     qos_polygon_utm = project_shapely_geom_custom(qos_polygon_wgs84, transformer_to_utm)
+    if qos_polygon_utm is None: 
+        print(f"Error: QoS polygon for {true_loc_coords_wgs84} could not be projected to UTM. Skipping point.")
+        return None
+        
     source_for_gi_utm = None 
 
+    # 1. Determine and validate source_for_gi_utm
     region_poly_wgs84 = None
     if is_start and start_polygon_wgs84: region_poly_wgs84 = start_polygon_wgs84
     elif is_end and end_polygon_wgs84: region_poly_wgs84 = end_polygon_wgs84
@@ -232,37 +239,46 @@ def r_gits_generate_fake_point_on_network(
             rand_region_pt_wgs84_coords = get_random_point_in_polygon_wgs84(region_poly_wgs84)
             rand_region_pt_utm_coords = project_coords_to_utm_custom(rand_region_pt_wgs84_coords[0], rand_region_pt_wgs84_coords[1])
             snapped_pt = snap_point_to_network_utm(Point(rand_region_pt_utm_coords), G_proj)
-            if snapped_pt and is_location_realistic_on_network(snapped_pt, qos_polygon_utm):
+            if snapped_pt and qos_polygon_utm.contains(snapped_pt): # Ensure source is in QoS
                 source_for_gi_utm = snapped_pt
                 break
     else: 
         true_loc_utm_coords = project_coords_to_utm_custom(true_loc_coords_wgs84[0], true_loc_coords_wgs84[1])
-        source_for_gi_utm = snap_point_to_network_utm(Point(true_loc_utm_coords), G_proj)
+        snapped_pt = snap_point_to_network_utm(Point(true_loc_utm_coords), G_proj)
+        if snapped_pt and qos_polygon_utm.contains(snapped_pt): # Ensure source is in QoS
+            source_for_gi_utm = snapped_pt
 
     if source_for_gi_utm is None: 
-        # Fallback: if snapping fails, use the original projected point (might be off-network)
-        source_for_gi_utm = Point(project_coords_to_utm_custom(true_loc_coords_wgs84[0], true_loc_coords_wgs84[1]))
+        # print(f"    Warning: Could not establish a valid (snapped & in QoS) source point for Geo-I for {true_loc_coords_wgs84}. Skipping.")
+        return None 
 
+    # 2. Perturbation Loop
     final_snapped_fake_utm = None
     for attempt in range(MAX_REALISTIC_ATTEMPTS):
         current_sensitivity = 150.0 - attempt * 10 
         dx_m, dy_m = planar_laplace_noise_meters(epsilon, sensitivity_meters=max(20, current_sensitivity))
         candidate_fake_utm = Point(source_for_gi_utm.x + dx_m, source_for_gi_utm.y + dy_m)
+        
         clamped_candidate_fake_utm = project_to_qos_boundary_utm(candidate_fake_utm, qos_polygon_utm)
-        if clamped_candidate_fake_utm is None: clamped_candidate_fake_utm = candidate_fake_utm # Should not be None if qos_polygon_utm is valid
+        if clamped_candidate_fake_utm is None: clamped_candidate_fake_utm = candidate_fake_utm 
         
         snapped_attempt_utm = snap_point_to_network_utm(clamped_candidate_fake_utm, G_proj)
         
-        if snapped_attempt_utm and is_location_realistic_on_network(snapped_attempt_utm, qos_polygon_utm):
+        if snapped_attempt_utm and is_location_realistic_on_network(snapped_attempt_utm, qos_polygon_utm, check_water_strict=True):
             final_snapped_fake_utm = snapped_attempt_utm
             break 
     
-    if final_snapped_fake_utm is None: # If all attempts to find a perturbed realistic point fail
-        # Fallback to the (snapped) source point for Geo-I if it's realistic
-        if source_for_gi_utm and is_location_realistic_on_network(source_for_gi_utm, qos_polygon_utm):
+    # 3. Fallback Strategy
+    if final_snapped_fake_utm is None: 
+        if is_location_realistic_on_network(source_for_gi_utm, qos_polygon_utm, check_water_strict=True):
             final_snapped_fake_utm = source_for_gi_utm
-        else: # Absolute fallback if even the source point isn't good (should be rare)
+        elif is_location_realistic_on_network(source_for_gi_utm, qos_polygon_utm, check_water_strict=False): 
+            final_snapped_fake_utm = source_for_gi_utm
+        else:
             return None 
+            
+    if final_snapped_fake_utm is None: 
+        return None
 
     final_fake_wgs84_coords = project_coords_to_wgs84_custom(final_snapped_fake_utm.x, final_snapped_fake_utm.y)
     return final_fake_wgs84_coords
@@ -299,11 +315,18 @@ if __name__ == '__main__':
     ])
     
     real_trajectory_coords_wgs84 = [
-        (HCMC_CENTER_LON_CONFIG - 0.004, HCMC_CENTER_LAT_CONFIG - 0.004),
-        (HCMC_CENTER_LON_CONFIG - 0.002, HCMC_CENTER_LAT_CONFIG - 0.001),
-        (HCMC_CENTER_LON_CONFIG + 0.001, HCMC_CENTER_LAT_CONFIG + 0.002),
-        (HCMC_CENTER_LON_CONFIG + 0.003, HCMC_CENTER_LAT_CONFIG + 0.004) 
+        (HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.8, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.8), 
+        (HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.6, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.3),
+        (HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.3, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.1),
+        (HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.1, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.5),
+        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.0, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.8), 
+        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.2, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.4),
+        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.5, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.0),
+        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.7, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.2),
+        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.9, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.5), 
+        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.5, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.9)
     ]
+
     real_trajectory_coords_wgs84_filtered = [
         p for p in real_trajectory_coords_wgs84
         if HCMC_BBOX[3] <= p[0] <= HCMC_BBOX[2] and HCMC_BBOX[1] <= p[1] <= HCMC_BBOX[0]
@@ -354,7 +377,7 @@ if __name__ == '__main__':
     map_creation_start_time = time.time()
     map_display_center_lat = (HCMC_BBOX[0] + HCMC_BBOX[1]) / 2
     map_display_center_lon = (HCMC_BBOX[2] + HCMC_BBOX[3]) / 2
-    m = folium.Map(location=[map_display_center_lat, map_display_center_lon], zoom_start=15, tiles="OpenStreetMap")
+    m = folium.Map(location=[map_display_center_lat, map_display_center_lon], zoom_start=14, tiles="OpenStreetMap") 
 
     def to_lat_lon_folium(coords_list_lon_lat): return [(c[1], c[0]) for c in coords_list_lon_lat]
 
@@ -364,12 +387,12 @@ if __name__ == '__main__':
     
     if buildings_gdf is not None and not buildings_gdf.empty:
         try: 
-            buildings_to_plot = buildings_gdf.sample(min(len(buildings_gdf), 30)) 
+            buildings_to_plot = buildings_gdf.sample(min(len(buildings_gdf), 50)) 
             folium.GeoJson(buildings_to_plot.to_crs("EPSG:4326"), style_function=lambda x: {'fillColor': 'grey', 'color':'darkgrey', 'weight': 0.5, 'fillOpacity':0.3}, name="Buildings (Sample from OSMnx)").add_to(m)
         except Exception as e: print(f"Could not plot buildings: {e}")
     if water_gdf is not None and not water_gdf.empty:
         try: 
-            water_to_plot = water_gdf.sample(min(len(water_gdf), 30)) 
+            water_to_plot = water_gdf.sample(min(len(water_gdf), 50)) 
             folium.GeoJson(water_to_plot.to_crs("EPSG:4326"), style_function=lambda x: {'fillColor': 'lightblue', 'color':'blue', 'weight': 0.5, 'fillOpacity':0.4}, name="Water Bodies (Sample from OSMnx)").add_to(m)
         except Exception as e: print(f"Could not plot water: {e}")
 
@@ -384,7 +407,7 @@ if __name__ == '__main__':
             folium.CircleMarker(location=(p_coords[1],p_coords[0]), radius=5, color="blue", fill=True,fill_color="royalblue",tooltip=f"Fake Pt {i+1}").add_to(m)
 
     folium.LayerControl().add_to(m) 
-    map_file = "hcmc_trajectory_privacy_map_osmnx_realism.html" 
+    map_file = "hcmc_trajectory_privacy_map_osmnx_realism_larger.html" 
     m.save(map_file)
     print(f"Map creation took {time.time() - map_creation_start_time:.2f}s")
     print(f"\nMap saved to {map_file}")
