@@ -2,345 +2,395 @@ import numpy as np
 import math
 import folium # For visualization
 from shapely.geometry import Point, Polygon, LineString # For geometric operations
+from shapely.ops import transform as shapely_transform
 import random # For selecting random points in polygons
+import osmnx as ox
+import geopandas as gpd
+from pyproj import Transformer, CRS
+import time
 
-# --- Configuration & Helper Functions ---
+# --- Configuration & Global Variables ---
 PRIVACY_EPSILON = 0.5 # Smaller epsilon = more privacy, larger epsilon = less noise
-MAX_REALISTIC_ATTEMPTS = 15
-SEARCH_RADIUS_REALISTIC_METERS = 30 # meters, for finding nearby realistic points
-MAX_PLAUSIBLE_SPEED_KMH = 60 # For path coherence (example)
+MAX_REALISTIC_ATTEMPTS = 10 # For retrying point generation if initial snap is not ideal
+MAX_PLAUSIBLE_SPEED_KMH = 60 # For future path coherence checks
 
-# --- Ho Chi Minh City Coordinates ---
-# Approximate center for example: around District 1
-HCMC_CENTER_LAT = 10.7769  # Latitude
-HCMC_CENTER_LON = 106.7009 # Longitude
+# --- Ho Chi Minh City Coordinates (from user's provided code) ---
+HCMC_CENTER_LAT_CONFIG = 10.7769
+HCMC_CENTER_LON_CONFIG = 106.7009
+offset_qos_deg_config = 0.005 # Approx 500m in degrees
 
-# Define a sample QoS Region (Polygon) in HCMC - approx 1km x 1km square
-# (longitude, latitude)
-offset_qos = 0.005 # Roughly 500m in degrees
-QOS_REGION_COORDS = [
-    (HCMC_CENTER_LON - offset_qos, HCMC_CENTER_LAT - offset_qos),
-    (HCMC_CENTER_LON - offset_qos, HCMC_CENTER_LAT + offset_qos),
-    (HCMC_CENTER_LON + offset_qos, HCMC_CENTER_LAT + offset_qos),
-    (HCMC_CENTER_LON + offset_qos, HCMC_CENTER_LAT - offset_qos),
-]
-QOS_POLYGON = Polygon(QOS_REGION_COORDS)
+# Define BBOX for OSMnx download based on user's QoS region idea
+# Making it slightly larger than the QoS to ensure graph coverage for snapping
+HCMC_BBOX = (
+    HCMC_CENTER_LAT_CONFIG + offset_qos_deg_config + 0.003,  # North
+    HCMC_CENTER_LAT_CONFIG - offset_qos_deg_config - 0.003,  # South
+    HCMC_CENTER_LON_CONFIG + offset_qos_deg_config + 0.003,  # East
+    HCMC_CENTER_LON_CONFIG - offset_qos_deg_config - 0.003   # West
+)
 
-# Define sample Start/End Regions (Polygons) within HCMC
-offset_start_end = 0.001 # Roughly 100m
-START_REGION_COORDS = [
-    (HCMC_CENTER_LON - offset_qos + 0.0005, HCMC_CENTER_LAT - offset_qos + 0.0005),
-    (HCMC_CENTER_LON - offset_qos + 0.0005, HCMC_CENTER_LAT - offset_qos + 0.0015),
-    (HCMC_CENTER_LON - offset_qos + 0.0015, HCMC_CENTER_LAT - offset_qos + 0.0015),
-    (HCMC_CENTER_LON - offset_qos + 0.0015, HCMC_CENTER_LAT - offset_qos + 0.0005),
-]
-END_REGION_COORDS = [
-    (HCMC_CENTER_LON + offset_qos - 0.0015, HCMC_CENTER_LAT + offset_qos - 0.0015),
-    (HCMC_CENTER_LON + offset_qos - 0.0015, HCMC_CENTER_LAT + offset_qos - 0.0005),
-    (HCMC_CENTER_LON + offset_qos - 0.0005, HCMC_CENTER_LAT + offset_qos - 0.0005),
-    (HCMC_CENTER_LON + offset_qos - 0.0005, HCMC_CENTER_LAT + offset_qos - 0.0015),
-]
-START_POLYGON = Polygon(START_REGION_COORDS)
-END_POLYGON = Polygon(END_REGION_COORDS)
+# Global variables for OSM data
+G_proj = None # Projected road network graph
+buildings_gdf = None # Projected building footprints
+water_gdf = None # Projected water bodies
+transformer_to_utm = None
+transformer_to_wgs84 = None
+TARGET_CRS = None # UTM CRS
 
-# Placeholder for map data - manually defined "forbidden" rectangular zones in HCMC
-# These would ideally be replaced by actual building/water data from OSM via OSMnx
-FORBIDDEN_ZONES_COORDS = [
-    [(HCMC_CENTER_LON + 0.001, HCMC_CENTER_LAT + 0.001),
-     (HCMC_CENTER_LON + 0.001, HCMC_CENTER_LAT + 0.0015),
-     (HCMC_CENTER_LON + 0.0015, HCMC_CENTER_LAT + 0.0015),
-     (HCMC_CENTER_LON + 0.0015, HCMC_CENTER_LAT + 0.001)], # "Building 1"
-    [(HCMC_CENTER_LON - 0.002, HCMC_CENTER_LAT - 0.002),
-     (HCMC_CENTER_LON - 0.002, HCMC_CENTER_LAT - 0.0015),
-     (HCMC_CENTER_LON - 0.0015, HCMC_CENTER_LAT - 0.0015),
-     (HCMC_CENTER_LON - 0.0015, HCMC_CENTER_LAT - 0.002)], # "Water Body 1"
-]
-FORBIDDEN_POLYGONS = [Polygon(coords) for coords in FORBIDDEN_ZONES_COORDS]
+# --- OSMnx Data Initialization ---
+def initialize_osm_data(bbox_tuple):
+    global G_proj, buildings_gdf, water_gdf, transformer_to_utm, transformer_to_wgs84, TARGET_CRS
+    if G_proj is not None:
+        print("OSM data already initialized.")
+        return
 
-# --- OSMnx Integration Placeholder ---
-# To use OSMnx for advanced realism, you would uncomment and complete this section.
-# You'll need to install osmnx: pip install osmnx
-# import osmnx as ox
-# G_map_hcmc = None
-# buildings_hcmc = None
-# water_hcmc = None
+    overall_init_start_time = time.time()
+    print(f"Initializing OSM data for bbox tuple: {bbox_tuple}...")
+    print("OSMnx caches downloaded data. Subsequent runs for the SAME bbox will be much faster.")
+    try:
+        # 1. Road Network
+        print("Step 1/3: Fetching and projecting road network graph...")
+        graph_fetch_start_time = time.time()
+        G = ox.graph_from_bbox(bbox_tuple, network_type='drive', simplify=True, retain_all=False, truncate_by_edge=False)
+        G_proj = ox.project_graph(G)
+        TARGET_CRS = G_proj.graph['crs'] # Get target CRS from the projected graph
+        print(f"  Road network loaded and projected to CRS: {TARGET_CRS} (took {time.time() - graph_fetch_start_time:.2f}s)")
+        
+        wgs84_crs = CRS("EPSG:4326")
+        transformer_to_utm = Transformer.from_crs(wgs84_crs, TARGET_CRS, always_xy=True)
+        transformer_to_wgs84 = Transformer.from_crs(TARGET_CRS, wgs84_crs, always_xy=True)
 
-# def initialize_osm_data_hcmc():
-#     global G_map_hcmc, buildings_hcmc, water_hcmc
-#     # Define the bounding box for the area of interest in HCMC
-#     # Example: slightly larger than our QoS region
-#     north, south = HCMC_CENTER_LAT + offset_qos + 0.005, HCMC_CENTER_LAT - offset_qos - 0.005
-#     east, west = HCMC_CENTER_LON + offset_qos + 0.005, HCMC_CENTER_LON - offset_qos - 0.005
-#     try:
-#         print("Attempting to download OSM data for HCMC area (this may take a moment)...")
-#         # Download street network (e.g., for checking road proximity)
-#         G_map_hcmc = ox.graph_from_bbox(north, south, east, west, network_type='drive_service', simplify=True, retain_all=True)
-#
-#         # Download building footprints
-#         tags_building = {'building': True}
-#         buildings_hcmc = ox.features_from_bbox(north, south, east, west, tags=tags_building)
-#         print(f"Loaded {len(buildings_hcmc)} building features from OSM.")
-#
-#         # Download water features
-#         tags_water = {'natural': ['water', 'bay'], 'waterway': True, 'landuse': 'reservoir'}
-#         water_hcmc = ox.features_from_bbox(north, south, east, west, tags=tags_water)
-#         print(f"Loaded {len(water_hcmc)} water features from OSM.")
-#
-#         print("OSM data initialized.")
-#     except Exception as e:
-#         print(f"Could not load OSM data: {e}. Realism checks will be limited.")
-#         G_map_hcmc, buildings_hcmc, water_hcmc = None, None, None
+        # 2. Building Footprints
+        print("Step 2/3: Fetching building footprints...")
+        features_start_time = time.time()
+        tags_building = {'building': True}
+        # Initialize as empty GeoDataFrame with the TARGET_CRS
+        buildings_gdf = gpd.GeoDataFrame(geometry=[], crs=TARGET_CRS) 
 
-# Call this once at the start if you want to use OSMnx
-# initialize_osm_data_hcmc()
+        try:
+            buildings_all_tags = ox.features_from_bbox(bbox_tuple, tags=tags_building)
+            if not buildings_all_tags.empty and 'geometry' in buildings_all_tags.columns:
+                # Filter for non-null and valid geometries first
+                # Ensure the geometry column is treated as such by GeoPandas
+                if not isinstance(buildings_all_tags, gpd.GeoDataFrame):
+                    buildings_all_tags = gpd.GeoDataFrame(buildings_all_tags, geometry='geometry', crs=wgs84_crs)
+                else:
+                    buildings_all_tags = buildings_all_tags.set_crs(wgs84_crs, allow_override=True)
 
+                valid_geometries = buildings_all_tags[buildings_all_tags['geometry'].notna() & buildings_all_tags['geometry'].is_valid].copy()
+                
+                if not valid_geometries.empty:
+                    # Select only Polygon/MultiPolygon types
+                    current_buildings_gdf = valid_geometries[valid_geometries['geometry'].type.isin(['Polygon', 'MultiPolygon'])].copy()
+                    
+                    if not current_buildings_gdf.empty:
+                        # The CRS should already be WGS84 from features_from_bbox
+                        # current_buildings_gdf = current_buildings_gdf.set_crs(wgs84_crs, allow_override=True) # Already set or inferred
+                        buildings_gdf = current_buildings_gdf.to_crs(TARGET_CRS) # Project
+                        print(f"  Loaded and projected {len(buildings_gdf)} building features.")
+        except Exception as e_feat:
+            print(f"  Error during building feature processing: {e_feat}")
+            # buildings_gdf remains an empty GeoDataFrame with the correct CRS
 
-def planar_laplace_noise(epsilon, sensitivity=1):
-    """
-    Generates 2D Laplace noise. For simplicity, draws two independent 1D Laplace samples.
-    A more standard planar Laplace mechanism involves sampling radius and angle.
-    Sensitivity here is a scaling factor for the noise based on the domain.
-    For lat/lon, sensitivity would be small (e.g., max distance error allowed / epsilon).
-    Let's use a simpler scale factor for now.
-    """
-    # Scale parameter b = sensitivity / epsilon.
-    # A practical approach for geographic coords: scale defines approx. meters of obfuscation.
-    # Example: if epsilon = 0.1, and we want noise around 100m, scale = 100.
-    # This is not strictly Geo-I's definition but a pragmatic way to control noise magnitude.
-    # For Geo-I, sensitivity is often 1 for normalized distances, or the max distance between points.
-    # The scaling factor below is heuristic and needs to be chosen based on desired physical obfuscation.
-    # 1 degree lat ~ 111 km. 0.001 degree ~ 111 meters.
-    # Let's aim for noise in the order of 0.0001 to 0.001 degrees.
-    # scale = (sensitivity_in_degrees / epsilon)
-    # If sensitivity is 0.001 degrees, scale = 0.001 / epsilon
-    effective_scale = 0.001 / epsilon # Heuristic: for epsilon=0.1, noise is ~0.01 deg; for e=1, ~0.001 deg
+        if buildings_gdf.empty: 
+            print("  No valid building Polygon/MultiPolygon features found or processed.")
+        print(f"  Building features step took {time.time() - features_start_time:.2f}s")
 
+        # 3. Water Bodies
+        print("Step 3/3: Fetching water features...")
+        water_features_start_time = time.time()
+        tags_water = {'natural': ['water', 'bay'], 'waterway': True, 'landuse': ['reservoir', 'basin']}
+        # Initialize as empty GeoDataFrame with the TARGET_CRS
+        water_gdf = gpd.GeoDataFrame(geometry=[], crs=TARGET_CRS)
+
+        try:
+            water_all_tags = ox.features_from_bbox(bbox_tuple, tags=tags_water)
+            if not water_all_tags.empty and 'geometry' in water_all_tags.columns:
+                if not isinstance(water_all_tags, gpd.GeoDataFrame):
+                    water_all_tags = gpd.GeoDataFrame(water_all_tags, geometry='geometry', crs=wgs84_crs)
+                else:
+                    water_all_tags = water_all_tags.set_crs(wgs84_crs, allow_override=True)
+                
+                valid_geometries_water = water_all_tags[water_all_tags['geometry'].notna() & water_all_tags['geometry'].is_valid].copy()
+
+                if not valid_geometries_water.empty:
+                    current_water_gdf = valid_geometries_water[valid_geometries_water['geometry'].type.isin(['Polygon', 'MultiPolygon'])].copy()
+
+                    if not current_water_gdf.empty:
+                        # current_water_gdf = current_water_gdf.set_crs(wgs84_crs, allow_override=True) # Already set or inferred
+                        water_gdf = current_water_gdf.to_crs(TARGET_CRS)
+                        print(f"  Loaded and projected {len(water_gdf)} water features.")
+        except Exception as e_feat_water:
+            print(f"  Error during water feature processing: {e_feat_water}")
+
+        if water_gdf.empty: 
+            print("  No valid water Polygon/MultiPolygon features found or processed.")
+        print(f"  Water features step took {time.time() - water_features_start_time:.2f}s")
+        
+        print(f"Total OSM data initialization time: {time.time() - overall_init_start_time:.2f} seconds.")
+    except Exception as e:
+        print(f"CRITICAL ERROR: Could not load OSM data (Overall): {e}")
+        G_proj, buildings_gdf, water_gdf = None, None, None 
+
+# --- Coordinate System and Snapping Helpers ---
+def project_coords_to_utm_custom(lon, lat):
+    if transformer_to_utm is None: raise ValueError("transformer_to_utm not initialized.")
+    return transformer_to_utm.transform(lon, lat)
+
+def project_coords_to_wgs84_custom(x, y):
+    if transformer_to_wgs84 is None: raise ValueError("transformer_to_wgs84 not initialized.")
+    return transformer_to_wgs84.transform(x, y)
+
+def project_shapely_geom_custom(geom, transformer):
+    if geom is None or transformer is None: return None
+    return shapely_transform(transformer.transform, geom)
+
+def snap_point_to_network_utm(point_utm, graph_proj):
+    if graph_proj is None or point_utm is None: return None
+    try:
+        edge_uvk = ox.distance.nearest_edges(graph_proj, X=point_utm.x, Y=point_utm.y)
+        if not edge_uvk: return None
+        
+        u, v, k = edge_uvk if isinstance(edge_uvk, tuple) else edge_uvk[0]
+        edge_data = graph_proj.get_edge_data(u, v, k)
+        edge_geom = edge_data.get('geometry') if edge_data else None
+
+        if not edge_geom: 
+            all_edges = graph_proj.edges(keys=True, data=True)
+            edge_geom = next((data['geometry'] for u_n, v_n, key_n, data in all_edges if u_n == u and v_n == v and key_n == k and 'geometry' in data), None)
+            if not edge_geom: return None
+            
+        if isinstance(edge_geom, LineString):
+            return edge_geom.interpolate(edge_geom.project(point_utm))
+        return None
+    except Exception: return None
+
+# --- Geo-Indistinguishability and Point Generation ---
+def planar_laplace_noise_meters(epsilon, sensitivity_meters=100.0):
+    scale = sensitivity_meters / (epsilon + 1e-9)
     u1 = np.random.uniform(-0.5, 0.5)
     u2 = np.random.uniform(-0.5, 0.5)
-    # Laplace L(0, b) can be generated as b * sgn(U-0.5) * ln(1-2|U-0.5|)
-    # However, many libraries use scale = 1/lambda, where lambda = epsilon/sensitivity. So b = sensitivity/epsilon
-    dx = effective_scale * np.sign(u1) * np.log(1 - 2 * np.abs(u1))
-    dy = effective_scale * np.sign(u2) * np.log(1 - 2 * np.abs(u2))
-    return dx, dy
+    dx_meters = scale * np.sign(u1) * np.log(1 - 2 * np.abs(u1))
+    dy_meters = scale * np.sign(u2) * np.log(1 - 2 * np.abs(u2))
+    return dx_meters, dy_meters
 
-def project_to_qos_boundary(point_coords, qos_polygon):
-    point = Point(point_coords)
-    if not qos_polygon.contains(point):
-        projected_point = qos_polygon.boundary.interpolate(qos_polygon.boundary.project(point))
-        return (projected_point.x, projected_point.y)
-    return point_coords
+def project_to_qos_boundary_utm(point_utm, qos_polygon_utm):
+    if qos_polygon_utm is None or point_utm is None: return point_utm
+    if not qos_polygon_utm.contains(point_utm):
+        projected_point = qos_polygon_utm.boundary.interpolate(qos_polygon_utm.boundary.project(point_utm))
+        return projected_point
+    return point_utm
 
-def is_location_realistic(point_coords, qos_polygon, forbidden_polygons_manual):
-    """
-    Checks if a point is in a realistic location.
-    Enhanced version would use OSM data (G_map_hcmc, buildings_hcmc, water_hcmc).
-    """
-    point = Point(point_coords)
+def get_random_point_in_polygon_wgs84(polygon_wgs84): # Expects Shapely Polygon
+    min_x, min_y, max_x, max_y = polygon_wgs84.bounds
+    attempts = 0
+    while attempts < 100: 
+        random_point_geom = Point(random.uniform(min_x, max_x), random.uniform(min_y, max_y))
+        if polygon_wgs84.contains(random_point_geom):
+            return (random_point_geom.x, random_point_geom.y) # lon, lat tuple
+        attempts +=1
+    return (polygon_wgs84.centroid.x, polygon_wgs84.centroid.y)
 
-    # Basic check: Must be within QoS (though usually clamped before this)
-    if not qos_polygon.contains(point):
-        return False # Should not happen if clamped correctly
 
-    # Manual Forbidden Zones (simple check)
-    for zone in forbidden_polygons_manual:
-        if zone.contains(point):
-            # print(f"Point {point_coords} rejected: in manual forbidden zone.")
-            return False
+def is_location_realistic_on_network(point_utm, qos_polygon_utm):
+    """Checks if a point (already snapped to network, in UTM) is realistic."""
+    if G_proj is None or not point_utm: return False 
+    if qos_polygon_utm and not qos_polygon_utm.contains(point_utm): return False 
 
-    # --- Advanced OSMnx based checks (conceptual) ---
-    # global buildings_hcmc, water_hcmc # G_map_hcmc
-    # if buildings_hcmc is not None and not buildings_hcmc.empty:
-    #     # Check if point is within any building polygon. Requires GeoDataFrame.
-    #     # This check can be slow if not optimized (e.g., using spatial index).
-    #     try:
-    #         if buildings_hcmc.geometry.contains(point).any():
-    #             print(f"Point {point_coords} rejected: inside OSM building.")
-    #             return False
-    #     except Exception as e:
-    #         print(f"Error checking OSM buildings: {e}") # Catch potential errors with empty GDFs etc.
-    #
-    # if water_hcmc is not None and not water_hcmc.empty:
-    #     try:
-    #         if water_hcmc.geometry.contains(point).any():
-    #             print(f"Point {point_coords} rejected: inside OSM water body.")
-    #             return False
-    #     except Exception as e:
-    #         print(f"Error checking OSM water: {e}")
+    if water_gdf is not None and not water_gdf.empty and water_gdf.intersects(point_utm).any():
+        try:
+            nearest_edge_uvk = ox.distance.nearest_edges(G_proj, X=point_utm.x, Y=point_utm.y)
+            u,v,k = nearest_edge_uvk if isinstance(nearest_edge_uvk, tuple) else nearest_edge_uvk[0]
+            edge_data = G_proj.get_edge_data(u,v,k)
+            if not (edge_data and edge_data.get('bridge') in ['yes', 'true', True, 1, '1', 'viaduct']):
+                return False 
+        except Exception: 
+            return False 
 
-    # (Optional) Proximity to road/path network (more complex)
-    # if G_map_hcmc is not None:
-    #     try:
-    #         # Find nearest edge. Note: X, Y order for nearest_edges is lon, lat.
-    #         _, dist = ox.distance.nearest_edges(G_map_hcmc, X=point.x, Y=point.y, return_dist=True)
-    #         # Assuming G_map_hcmc is projected to meters for meaningful dist.
-    #         # If not projected, dist might be in degrees or incorrect.
-    #         # For unprojected graph, ox.distance.great_circle_vec might be better.
-    #         # This part needs careful handling of projections for accurate distance.
-    #         # Let's assume a threshold in degrees if not projected, e.g., 0.0005 deg ~ 50m
-    #         # if dist > 0.0005: # Example threshold
-    #         #     print(f"Point {point_coords} rejected: too far from OSM road network (dist: {dist}).")
-    #         #     return False
-    #     except Exception as e:
-    #         print(f"Error checking OSM road proximity: {e}")
     return True
 
-def find_nearby_realistic_point(center_coords, qos_polygon, forbidden_polygons_manual, search_radius_m):
-    center_lon, center_lat = center_coords
-    # Convert search_radius_m to approximate degrees
-    # 1 deg lat ~ 111km. search_radius_m / (111000)
-    # 1 deg lon ~ 111km * cos(lat). search_radius_m / (111000 * cos(lat_rad))
-    lat_rad = math.radians(center_lat)
-    radius_deg_lat = search_radius_m / 111000.0
-    radius_deg_lon = search_radius_m / (111000.0 * math.cos(lat_rad) + 1e-9) # Add epsilon to avoid division by zero near poles
+def r_gits_generate_fake_point_on_network(
+        true_loc_coords_wgs84, # (lon, lat) tuple
+        epsilon,
+        qos_polygon_wgs84, # Shapely Polygon in WGS84
+        is_start=False, start_polygon_wgs84=None, # Shapely Polygon
+        is_end=False, end_polygon_wgs84=None,   # Shapely Polygon
+        last_fake_snapped_utm=None): # For future routing
 
-    for _ in range(MAX_REALISTIC_ATTEMPTS // 2):
-        angle = np.random.uniform(0, 2 * np.pi)
-        # Sample within an ellipse to approximate circular region in meters
-        r_lon = np.random.uniform(0, radius_deg_lon)
-        r_lat = np.random.uniform(0, radius_deg_lat)
+    if G_proj is None:
+        print("Error: Road network (G_proj) not initialized for point generation.")
+        return None
 
-        offset_lon = r_lon * math.cos(angle)
-        offset_lat = r_lat * math.sin(angle)
+    qos_polygon_utm = project_shapely_geom_custom(qos_polygon_wgs84, transformer_to_utm)
+    source_for_gi_utm = None 
 
-        candidate_pt_coords = (center_lon + offset_lon, center_lat + offset_lat)
+    region_poly_wgs84 = None
+    if is_start and start_polygon_wgs84: region_poly_wgs84 = start_polygon_wgs84
+    elif is_end and end_polygon_wgs84: region_poly_wgs84 = end_polygon_wgs84
 
-        if qos_polygon.contains(Point(candidate_pt_coords)) and \
-           is_location_realistic(candidate_pt_coords, qos_polygon, forbidden_polygons_manual):
-            return candidate_pt_coords
-    return None
+    if region_poly_wgs84:
+        for _ in range(MAX_REALISTIC_ATTEMPTS): 
+            rand_region_pt_wgs84_coords = get_random_point_in_polygon_wgs84(region_poly_wgs84)
+            rand_region_pt_utm_coords = project_coords_to_utm_custom(rand_region_pt_wgs84_coords[0], rand_region_pt_wgs84_coords[1])
+            snapped_pt = snap_point_to_network_utm(Point(rand_region_pt_utm_coords), G_proj)
+            if snapped_pt and is_location_realistic_on_network(snapped_pt, qos_polygon_utm):
+                source_for_gi_utm = snapped_pt
+                break
+    else: 
+        true_loc_utm_coords = project_coords_to_utm_custom(true_loc_coords_wgs84[0], true_loc_coords_wgs84[1])
+        source_for_gi_utm = snap_point_to_network_utm(Point(true_loc_utm_coords), G_proj)
 
-def get_random_point_in_polygon(polygon):
-    min_x, min_y, max_x, max_y = polygon.bounds
-    while True:
-        random_point = Point(random.uniform(min_x, max_x), random.uniform(min_y, max_y))
-        if polygon.contains(random_point):
-            return (random_point.x, random_point.y)
+    if source_for_gi_utm is None: 
+        # Fallback: if snapping fails, use the original projected point (might be off-network)
+        source_for_gi_utm = Point(project_coords_to_utm_custom(true_loc_coords_wgs84[0], true_loc_coords_wgs84[1]))
 
-def r_gits_generate_fake_point(true_loc_coords, epsilon, qos_polygon, forbidden_polygons_manual,
-                               is_start=False, start_polygon=None,
-                               is_end=False, end_polygon=None,
-                               last_fake_point_coords=None): # Timestamps needed for full coherence
-    current_true_for_geo_i = true_loc_coords
+    final_snapped_fake_utm = None
+    for attempt in range(MAX_REALISTIC_ATTEMPTS):
+        current_sensitivity = 150.0 - attempt * 10 
+        dx_m, dy_m = planar_laplace_noise_meters(epsilon, sensitivity_meters=max(20, current_sensitivity))
+        candidate_fake_utm = Point(source_for_gi_utm.x + dx_m, source_for_gi_utm.y + dy_m)
+        clamped_candidate_fake_utm = project_to_qos_boundary_utm(candidate_fake_utm, qos_polygon_utm)
+        if clamped_candidate_fake_utm is None: clamped_candidate_fake_utm = candidate_fake_utm # Should not be None if qos_polygon_utm is valid
+        
+        snapped_attempt_utm = snap_point_to_network_utm(clamped_candidate_fake_utm, G_proj)
+        
+        if snapped_attempt_utm and is_location_realistic_on_network(snapped_attempt_utm, qos_polygon_utm):
+            final_snapped_fake_utm = snapped_attempt_utm
+            break 
+    
+    if final_snapped_fake_utm is None: # If all attempts to find a perturbed realistic point fail
+        # Fallback to the (snapped) source point for Geo-I if it's realistic
+        if source_for_gi_utm and is_location_realistic_on_network(source_for_gi_utm, qos_polygon_utm):
+            final_snapped_fake_utm = source_for_gi_utm
+        else: # Absolute fallback if even the source point isn't good (should be rare)
+            return None 
 
-    if is_start and start_polygon:
-        current_true_for_geo_i = get_random_point_in_polygon(start_polygon)
-
-    dx, dy = planar_laplace_noise(epsilon)
-    candidate_fake_coords = (current_true_for_geo_i[0] + dx, current_true_for_geo_i[1] + dy)
-    candidate_fake_coords = project_to_qos_boundary(candidate_fake_coords, qos_polygon)
-
-    final_fake_coords = candidate_fake_coords
-    if not is_location_realistic(candidate_fake_coords, qos_polygon, forbidden_polygons_manual):
-        realistic_nearby = find_nearby_realistic_point(candidate_fake_coords, qos_polygon, forbidden_polygons_manual, SEARCH_RADIUS_REALISTIC_METERS)
-        if realistic_nearby:
-            final_fake_coords = realistic_nearby
-        else:
-            # Fallback: Use the QoS-clamped point if no realistic nearby point is found quickly.
-            # This is a simplification; a better fallback might be the *closest* realistic point.
-            # print(f"Warning: Could not find a clearly realistic point for {candidate_fake_coords} after trying. Using QoS-clamped.")
-            pass # final_fake_coords is already candidate_fake_coords
-
-    if is_end and end_polygon:
-        true_end_for_geo_i = get_random_point_in_polygon(end_polygon)
-        dx_end, dy_end = planar_laplace_noise(epsilon)
-        candidate_end_fake_coords = (true_end_for_geo_i[0] + dx_end, true_end_for_geo_i[1] + dy_end)
-        candidate_end_fake_coords = project_to_qos_boundary(candidate_end_fake_coords, qos_polygon)
-
-        if is_location_realistic(candidate_end_fake_coords, qos_polygon, forbidden_polygons_manual):
-            final_fake_coords = candidate_end_fake_coords
-        else:
-            realistic_nearby_end = find_nearby_realistic_point(candidate_end_fake_coords, qos_polygon, forbidden_polygons_manual, SEARCH_RADIUS_REALISTIC_METERS)
-            if realistic_nearby_end:
-                final_fake_coords = realistic_nearby_end
-            else: # Fallback for end point
-                final_fake_coords = candidate_end_fake_coords
-                # print(f"Warning: Could not find a clearly realistic END point for {candidate_end_fake_coords}. Using QoS-clamped.")
-    return final_fake_coords
+    final_fake_wgs84_coords = project_coords_to_wgs84_custom(final_snapped_fake_utm.x, final_snapped_fake_utm.y)
+    return final_fake_wgs84_coords
 
 # --- Simulation & Visualization ---
 if __name__ == '__main__':
-    # Sample Real Trajectory in HCMC (list of (lon, lat) tuples)
-    # Moving roughly from SW of center to NE of center within QoS general area
-    real_trajectory_coords = [
-        (HCMC_CENTER_LON - 0.004, HCMC_CENTER_LAT - 0.004), # Start
-        (HCMC_CENTER_LON - 0.003, HCMC_CENTER_LAT - 0.002),
-        (HCMC_CENTER_LON - 0.001, HCMC_CENTER_LAT - 0.000),
-        (HCMC_CENTER_LON + 0.001, HCMC_CENTER_LAT + 0.001),
-        (HCMC_CENTER_LON + 0.002, HCMC_CENTER_LAT + 0.003),
-        (HCMC_CENTER_LON + 0.004, HCMC_CENTER_LAT + 0.004)  # End
+    overall_start_time = time.time()
+    initialize_osm_data(HCMC_BBOX)
+
+    if G_proj is None:
+        print("Exiting: OSM data initialization failed. Cannot proceed with simulation.")
+        exit()
+
+    QOS_POLYGON_WGS84 = Polygon([
+        (HCMC_CENTER_LON_CONFIG - offset_qos_deg_config, HCMC_CENTER_LAT_CONFIG - offset_qos_deg_config),
+        (HCMC_CENTER_LON_CONFIG - offset_qos_deg_config, HCMC_CENTER_LAT_CONFIG + offset_qos_deg_config),
+        (HCMC_CENTER_LON_CONFIG + offset_qos_deg_config, HCMC_CENTER_LAT_CONFIG + offset_qos_deg_config),
+        (HCMC_CENTER_LON_CONFIG + offset_qos_deg_config, HCMC_CENTER_LAT_CONFIG - offset_qos_deg_config),
+    ])
+
+    offset_start_end_deg_config = 0.001 
+    START_POLYGON_WGS84 = Polygon([
+        (HCMC_CENTER_LON_CONFIG - offset_qos_deg_config + 0.0005, HCMC_CENTER_LAT_CONFIG - offset_qos_deg_config + 0.0005),
+        (HCMC_CENTER_LON_CONFIG - offset_qos_deg_config + 0.0005, HCMC_CENTER_LAT_CONFIG - offset_qos_deg_config + 0.0015),
+        (HCMC_CENTER_LON_CONFIG - offset_qos_deg_config + 0.0015, HCMC_CENTER_LAT_CONFIG - offset_qos_deg_config + 0.0015),
+        (HCMC_CENTER_LON_CONFIG - offset_qos_deg_config + 0.0015, HCMC_CENTER_LAT_CONFIG - offset_qos_deg_config + 0.0005),
+    ])
+
+    END_POLYGON_WGS84 = Polygon([
+        (HCMC_CENTER_LON_CONFIG + offset_qos_deg_config - 0.0015, HCMC_CENTER_LAT_CONFIG + offset_qos_deg_config - 0.0015),
+        (HCMC_CENTER_LON_CONFIG + offset_qos_deg_config - 0.0015, HCMC_CENTER_LAT_CONFIG + offset_qos_deg_config - 0.0005),
+        (HCMC_CENTER_LON_CONFIG + offset_qos_deg_config - 0.0005, HCMC_CENTER_LAT_CONFIG + offset_qos_deg_config - 0.0005),
+        (HCMC_CENTER_LON_CONFIG + offset_qos_deg_config - 0.0005, HCMC_CENTER_LAT_CONFIG + offset_qos_deg_config - 0.0015),
+    ])
+    
+    real_trajectory_coords_wgs84 = [
+        (HCMC_CENTER_LON_CONFIG - 0.004, HCMC_CENTER_LAT_CONFIG - 0.004),
+        (HCMC_CENTER_LON_CONFIG - 0.002, HCMC_CENTER_LAT_CONFIG - 0.001),
+        (HCMC_CENTER_LON_CONFIG + 0.001, HCMC_CENTER_LAT_CONFIG + 0.002),
+        (HCMC_CENTER_LON_CONFIG + 0.003, HCMC_CENTER_LAT_CONFIG + 0.004) 
     ]
+    real_trajectory_coords_wgs84_filtered = [
+        p for p in real_trajectory_coords_wgs84
+        if HCMC_BBOX[3] <= p[0] <= HCMC_BBOX[2] and HCMC_BBOX[1] <= p[1] <= HCMC_BBOX[0]
+    ]
+    if not real_trajectory_coords_wgs84_filtered:
+         print("Warning: All real trajectory points are outside the OSM data bounding box. Using HCMC center as a single point.")
+         real_trajectory_coords_wgs84_filtered = [(HCMC_CENTER_LON_CONFIG, HCMC_CENTER_LAT_CONFIG)]
 
-    fake_trajectory_coords = []
-    last_fk_point = None
+    fake_trajectory_coords_wgs84 = []
+    snapped_real_trajectory_wgs84 = [] 
+    
+    print(f"\nProcessing trajectory of {len(real_trajectory_coords_wgs84_filtered)} points...")
+    sim_start_time = time.time()
+    total_points = len(real_trajectory_coords_wgs84_filtered)
+    last_fake_snapped_point_utm = None
 
-    print("Processing trajectory...")
-    for i, true_loc in enumerate(real_trajectory_coords):
+    for i, true_loc_wgs84_tuple in enumerate(real_trajectory_coords_wgs84_filtered):
+        print(f"  Processing point {i+1} of {total_points} (True WGS84: {true_loc_wgs84_tuple[0]:.5f}, {true_loc_wgs84_tuple[1]:.5f})...")
+        
+        true_loc_utm_pt = Point(project_coords_to_utm_custom(true_loc_wgs84_tuple[0], true_loc_wgs84_tuple[1]))
+        snapped_true_utm_pt = snap_point_to_network_utm(true_loc_utm_pt, G_proj)
+        if snapped_true_utm_pt:
+            snapped_true_wgs84_coords = project_coords_to_wgs84_custom(snapped_true_utm_pt.x, snapped_true_utm_pt.y)
+            snapped_real_trajectory_wgs84.append(snapped_true_wgs84_coords)
+        else: 
+            snapped_real_trajectory_wgs84.append(true_loc_wgs84_tuple)
+
         is_start_pt = (i == 0)
-        is_end_pt = (i == len(real_trajectory_coords) - 1)
+        is_end_pt = (i == total_points - 1)
+        
+        fake_pt_wgs84_tuple = r_gits_generate_fake_point_on_network(
+            true_loc_wgs84_tuple, PRIVACY_EPSILON, QOS_POLYGON_WGS84,
+            is_start=is_start_pt, start_polygon_wgs84=START_POLYGON_WGS84,
+            is_end=is_end_pt, end_polygon_wgs84=END_POLYGON_WGS84,
+            last_fake_snapped_utm=last_fake_snapped_point_utm)
+        
+        if fake_pt_wgs84_tuple:
+            fake_trajectory_coords_wgs84.append(fake_pt_wgs84_tuple)
+            fake_pt_utm_coords = project_coords_to_utm_custom(fake_pt_wgs84_tuple[0], fake_pt_wgs84_tuple[1])
+            last_fake_snapped_point_utm = Point(fake_pt_utm_coords) 
+            print(f"    -> Fake generated (WGS84): ({fake_pt_wgs84_tuple[0]:.5f}, {fake_pt_wgs84_tuple[1]:.5f})")
+        else:
+            print(f"    -> Failed to generate valid fake point.")
+            last_fake_snapped_point_utm = None
 
-        fake_pt = r_gits_generate_fake_point(
-            true_loc, PRIVACY_EPSILON, QOS_POLYGON, FORBIDDEN_POLYGONS,
-            is_start=is_start_pt, start_polygon=START_POLYGON,
-            is_end=is_end_pt, end_polygon=END_POLYGON,
-            last_fake_point_coords=last_fk_point
-        )
-        fake_trajectory_coords.append(fake_pt)
-        last_fk_point = fake_pt
-        print(f"True: ({true_loc[0]:.5f}, {true_loc[1]:.5f}) -> Fake: ({fake_pt[0]:.5f}, {fake_pt[1]:.5f})")
+    print(f"Trajectory simulation took {time.time() - sim_start_time:.2f}s")
 
-    # --- Visualization with Folium on OpenStreetMap ---
-    # Map centered on HCMC_CENTER_LAT, HCMC_CENTER_LON
-    m = folium.Map(location=[HCMC_CENTER_LAT, HCMC_CENTER_LON], zoom_start=15, tiles="OpenStreetMap")
+    map_creation_start_time = time.time()
+    map_display_center_lat = (HCMC_BBOX[0] + HCMC_BBOX[1]) / 2
+    map_display_center_lon = (HCMC_BBOX[2] + HCMC_BBOX[3]) / 2
+    m = folium.Map(location=[map_display_center_lat, map_display_center_lon], zoom_start=15, tiles="OpenStreetMap")
 
-    def to_lat_lon_folium(coords_list_lon_lat): # Folium expects (lat, lon)
-        return [(c[1], c[0]) for c in coords_list_lon_lat]
+    def to_lat_lon_folium(coords_list_lon_lat): return [(c[1], c[0]) for c in coords_list_lon_lat]
 
-    folium.Polygon(
-        locations=to_lat_lon_folium(QOS_REGION_COORDS),
-        color="blue", fill=True, fill_color="blue", fill_opacity=0.1,
-        tooltip="QoS Region"
-    ).add_to(m)
-    folium.Polygon(
-        locations=to_lat_lon_folium(START_REGION_COORDS),
-        color="green", fill=True, fill_color="green", fill_opacity=0.2,
-        tooltip="Plausible Start Region"
-    ).add_to(m)
-    folium.Polygon(
-        locations=to_lat_lon_folium(END_REGION_COORDS),
-        color="purple", fill=True, fill_color="purple", fill_opacity=0.2,
-        tooltip="Plausible End Region"
-    ).add_to(m)
-    for zone_coords in FORBIDDEN_ZONES_COORDS:
-        folium.Polygon(
-            locations=to_lat_lon_folium(zone_coords),
-            color="black", fill=True, fill_color="dimgray", fill_opacity=0.4,
-            tooltip="Forbidden Zone (Manual)"
-        ).add_to(m)
+    if QOS_POLYGON_WGS84: folium.Polygon(locations=to_lat_lon_folium(list(QOS_POLYGON_WGS84.exterior.coords)), color="blue", fill=True, fill_color="blue", fill_opacity=0.1, tooltip="QoS Region", name="QoS Region").add_to(m)
+    if START_POLYGON_WGS84: folium.Polygon(locations=to_lat_lon_folium(list(START_POLYGON_WGS84.exterior.coords)), color="green", fill=True, fill_color="green", fill_opacity=0.2, tooltip="Start Region", name="Start Region").add_to(m)
+    if END_POLYGON_WGS84: folium.Polygon(locations=to_lat_lon_folium(list(END_POLYGON_WGS84.exterior.coords)), color="purple", fill=True, fill_color="purple", fill_opacity=0.2, tooltip="End Region", name="End Region").add_to(m)
+    
+    if buildings_gdf is not None and not buildings_gdf.empty:
+        try: 
+            buildings_to_plot = buildings_gdf.sample(min(len(buildings_gdf), 30)) 
+            folium.GeoJson(buildings_to_plot.to_crs("EPSG:4326"), style_function=lambda x: {'fillColor': 'grey', 'color':'darkgrey', 'weight': 0.5, 'fillOpacity':0.3}, name="Buildings (Sample from OSMnx)").add_to(m)
+        except Exception as e: print(f"Could not plot buildings: {e}")
+    if water_gdf is not None and not water_gdf.empty:
+        try: 
+            water_to_plot = water_gdf.sample(min(len(water_gdf), 30)) 
+            folium.GeoJson(water_to_plot.to_crs("EPSG:4326"), style_function=lambda x: {'fillColor': 'lightblue', 'color':'blue', 'weight': 0.5, 'fillOpacity':0.4}, name="Water Bodies (Sample from OSMnx)").add_to(m)
+        except Exception as e: print(f"Could not plot water: {e}")
 
-    if real_trajectory_coords:
-        folium.PolyLine(to_lat_lon_folium(real_trajectory_coords), color="red", weight=3, opacity=0.8, tooltip="Real Trajectory").add_to(m)
-        for i, p_coords in enumerate(real_trajectory_coords):
-            folium.CircleMarker(
-                location=(p_coords[1], p_coords[0]), radius=6, color="red", fill=True, fill_color="darkred",
-                tooltip=f"Real Pt {i+1}: ({p_coords[0]:.4f}, {p_coords[1]:.4f})"
-            ).add_to(m)
+    if snapped_real_trajectory_wgs84:
+        folium.PolyLine(to_lat_lon_folium(snapped_real_trajectory_wgs84), color="red", weight=3, opacity=0.8, tooltip="Snapped Real Trajectory", name="Snapped Real Trajectory").add_to(m)
+        for i, p_coords in enumerate(snapped_real_trajectory_wgs84): 
+            folium.CircleMarker(location=(p_coords[1],p_coords[0]), radius=5, color="red", fill=True,fill_color="darkred",tooltip=f"Real (Snapped) Pt {i+1}").add_to(m)
+    
+    if fake_trajectory_coords_wgs84:
+        folium.PolyLine(to_lat_lon_folium(fake_trajectory_coords_wgs84), color="dodgerblue", weight=3, opacity=0.8, dash_array='10, 5', tooltip="Fake Trajectory (on network)", name="Fake Trajectory").add_to(m)
+        for i, p_coords in enumerate(fake_trajectory_coords_wgs84): 
+            folium.CircleMarker(location=(p_coords[1],p_coords[0]), radius=5, color="blue", fill=True,fill_color="royalblue",tooltip=f"Fake Pt {i+1}").add_to(m)
 
-    if fake_trajectory_coords:
-        folium.PolyLine(to_lat_lon_folium(fake_trajectory_coords), color="dodgerblue", weight=3, opacity=0.8, dash_array='10, 5', tooltip="Fake Trajectory (R-GITS)").add_to(m)
-        for i, p_coords in enumerate(fake_trajectory_coords):
-            folium.CircleMarker(
-                location=(p_coords[1], p_coords[0]), radius=6, color="blue", fill=True, fill_color="royalblue",
-                tooltip=f"Fake Pt {i+1}: ({p_coords[0]:.4f}, {p_coords[1]:.4f})"
-            ).add_to(m)
-
-    map_file = "hcmc_trajectory_privacy_map.html"
+    folium.LayerControl().add_to(m) 
+    map_file = "hcmc_trajectory_privacy_map_osmnx_realism.html" 
     m.save(map_file)
+    print(f"Map creation took {time.time() - map_creation_start_time:.2f}s")
     print(f"\nMap saved to {map_file}")
-    print("Open this HTML file in a browser to see the trajectories on an OpenStreetMap of Ho Chi Minh City.")
-    print("\n--- Notes for Advanced Realism (OSMnx) ---")
-    print("1. To use actual OSM data for realism (buildings, water, roads):")
-    print("   - Install OSMnx: pip install osmnx geopandas")
-    print("   - Uncomment the 'OSMnx Integration Placeholder' section.")
-    print("   - Uncomment and complete the OSM-based checks within 'is_location_realistic'.")
-    print("   - Be aware that downloading OSM data (initialize_osm_data_hcmc) requires an internet connection and can take time.")
-    print("   - OSMnx geometric operations are more accurate on projected graphs.")
+    print("--- Note on Realism & Traffic Rules ---")
+    print("This version uses OSMnx data for road network, buildings, and water bodies.")
+    print("Fake points are snapped to roads and checked against water (unless on bridges).")
+    print("Full traffic rule adherence (one-ways, etc.) would require route generation between points.")
+    print(f"Total script execution time: {time.time() - overall_start_time:.2f} seconds")
+
