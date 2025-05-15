@@ -6,3 +6,4 @@ shapely>=2.0.0
 osmnx>=1.2.0
 tqdm>=4.64.0
 scikit-learn>=1.6.0
+folium>=0.16.0
