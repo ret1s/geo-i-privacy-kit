@@ -1,0 +1,34 @@
+{
+  "trajectories": [
+    {
+      "id": "trajectory_1",
+      "points": [
+        {"longitude": 106.7009, "latitude": 10.7769},
+        {"longitude": 106.7010, "latitude": 10.7770},
+        {"longitude": 106.7011, "latitude": 10.7771},
+        {"longitude": 106.7012, "latitude": 10.7772},
+        {"longitude": 106.7013, "latitude": 10.7773}
+      ]
+    },
+    {
+      "id": "trajectory_2",
+      "points": [
+        {"longitude": 106.7020, "latitude": 10.7780},
+        {"longitude": 106.7021, "latitude": 10.7781},
+        {"longitude": 106.7022, "latitude": 10.7782},
+        {"longitude": 106.7023, "latitude": 10.7783},
+        {"longitude": 106.7024, "latitude": 10.7784}
+      ]
+    },
+    {
+      "id": "trajectory_3",
+      "points": [
+        {"longitude": 106.7030, "latitude": 10.7790},
+        {"longitude": 106.7031, "latitude": 10.7791},
+        {"longitude": 106.7032, "latitude": 10.7792},
+        {"longitude": 106.7033, "latitude": 10.7793},
+        {"longitude": 106.7034, "latitude": 10.7794}
+      ]
+    }
+  ]
+}

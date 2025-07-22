@@ -314,18 +314,27 @@ if __name__ == '__main__':
         (HCMC_CENTER_LON_CONFIG + offset_qos_deg_config - 0.0005, HCMC_CENTER_LAT_CONFIG + offset_qos_deg_config - 0.0015),
     ])
     
-    real_trajectory_coords_wgs84 = [
-        (HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.8, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.8), 
-        (HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.6, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.3),
-        (HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.3, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.1),
-        (HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.1, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.5),
-        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.0, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.8), 
-        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.2, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.4),
-        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.5, HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.0),
-        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.7, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.2),
-        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.9, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.5), 
-        (HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.5, HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.9)
-    ]
+    # Updated real trajectory with 10 points, closer together for more realism
+    # Spanning a smaller portion of the HCMC_BBOX for more continuous movement
+    start_lon = HCMC_CENTER_LON_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.7
+    start_lat = HCMC_CENTER_LAT_CONFIG - HCMC_BBOX_HALF_SIZE_DEG * 0.7
+    end_lon = HCMC_CENTER_LON_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.7
+    end_lat = HCMC_CENTER_LAT_CONFIG + HCMC_BBOX_HALF_SIZE_DEG * 0.7
+    
+    num_points = 10
+    real_trajectory_coords_wgs84 = []
+    for i in range(num_points):
+        fraction = i / (num_points - 1)
+        lon = start_lon + fraction * (end_lon - start_lon)
+        lat = start_lat + fraction * (end_lat - start_lat)
+        # Add slight perpendicular jitter for a bit more variation than a straight line
+        if i > 0 and i < num_points -1: # Don't jitter start/end
+            jitter_lon = (random.random() - 0.5) * 0.0005 # Approx 50m jitter
+            jitter_lat = (random.random() - 0.5) * 0.0005
+            lon += jitter_lon
+            lat += jitter_lat
+        real_trajectory_coords_wgs84.append((lon, lat))
+
 
     real_trajectory_coords_wgs84_filtered = [
         p for p in real_trajectory_coords_wgs84
